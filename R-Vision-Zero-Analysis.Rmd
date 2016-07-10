@@ -1,0 +1,127 @@
+---
+title: "Untitled"
+author: "Matt Moocarme"
+date: "July 9, 2016"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE,
+                      warning = FALSE,
+                      cache = T,
+                      message = FALSE,
+                      comment = '')
+```
+
+```{r}
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(lubridate)
+library(caret)
+library(DAAG)
+library(forecast)
+library(TTR)
+```
+
+```{r}
+VZCollision <- tbl(src_sqlite(path='VisionZeroDB.sqlite'),'VZCollision')
+tidy.VZ <- VZCollision %>% 
+  select(Date, PersonsInjured) %>%
+  filter(PersonsInjured > 0) %>% 
+  group_by(Date) %>%
+  summarise(Total.Counts = n())
+tidy.VZ2 <- collect(tidy.VZ)
+
+```
+
+```{r}
+tidy.VZ2$Date <- as.Date(tidy.VZ2$Date, '%m/%d/%Y')
+tidy.VZ2 <- arrange(data.frame(tidy.VZ2), Date)
+```
+
+```{r}
+ggplot(data = tidy.VZ2, aes(x = Date, y = Total.Counts)) + geom_line() + geom_smooth(method = lm)
+```
+apply simple linear model fit
+
+```{r}
+lmfit <- lm(tidy.VZ2$Total.Counts ~ tidy.VZ2$Date)
+lmfit
+```
+T-test
+```{r}
+t.test(row_number(tidy.VZ2$Date), tidy.VZ2$Total.Counts)
+# p-value < 0.05 Date affects total counts, due to seasonality
+```
+
+```{r}
+tidy.VZ3 <- tidy.VZ2 %>% mutate(Year = year(tidy.VZ2$Date), Month = month(tidy.VZ2$Date),
+                               Week = week(tidy.VZ2$Date), Day = day(tidy.VZ2$Date),
+                               Wday = wday(tidy.VZ2$Date)) %>% ungroup()
+```
+Injuries by year
+```{r}
+Injuries.By.Year <- tidy.VZ3 %>%
+  group_by(Year) %>%
+  summarise(Total.Counts = sum(Total.Counts))
+t.test(row_number(Injuries.By.Year$Year[2:4]), Injuries.By.Year$Total.Counts[2:4])
+```
+
+```{r}
+Injuries.By.Month.Year <- tidy.VZ3 %>%
+  group_by(Month, Year) %>%
+  summarise(Total.Counts = sum(Total.Counts))
+
+ggplot(data = Injuries.By.Month.Year, aes(x= Month, y = Total.Counts, color = as.factor(Year))) + geom_line()
+```
+Split data set from regression
+```{r}
+# Multi Variate linear regression
+dataPartition <- as.integer(.9*length(tidy.VZ3$Total.Counts))
+df_train <- tidy.VZ3[ 1:dataPartition,]
+df_test  <- tidy.VZ3[-(1:dataPartition),]
+```
+
+```{r}
+fit.mvlm <- lm(data = df_train, Total.Counts~ Year * Date * (sin(2*pi*Day/31) + cos(2*pi*Day/31)) * 
+                 (sin(2*pi*Month/12) + cos(2*pi*Month/12)) * (sin(2*pi*Week/52) + cos(2*pi*Week/52)) *
+                 (sin(2*pi*Wday/7) + cos(2*pi*Wday/7)))
+#summary(fit.mvlm)
+```
+Plot the fit
+```{r}
+ggplot() + geom_point(data = tidy.VZ3, aes(x = Date, y = Total.Counts)) + 
+  geom_line(data = fit.mvlm, aes(x = tidy.VZ3$Date[1:dataPartition], y = fit.mvlm$fitted.values), color = 'red') +
+  geom_line(aes(x = tidy.VZ3$Date[-(1:dataPartition)], y = predict.lm(fit.mvlm, df_test)), color = 'green')
+```
+```{r}
+RMSE(predict.lm(fit.mvlm, df_test), tidy.VZ3$Total.Counts[-(1:dataPartition)])
+```
+
+## Time series analysis
+```{r}
+tsTC <- ts(tidy.VZ3$Total.Counts, frequency = 365, start=c(2012, 7))
+TCComp <- decompose(tsTC)
+plot(TCComp)
+```
+
+Holt winters
+```{r}
+TCForecasts <- HoltWinters(tsTC)
+TCForecasts
+plot(TCForecasts)
+```
+The estimated values of alpha, beta and gamma are 0.41, 0.00, and 0.96, respectively. The value of alpha (0.41) is relatively low, indicating that the estimate of the level at the current time point is based upon both recent observations and some observations in the more distant past. The value of beta is 0.00, indicating that the estimate of the slope b of the trend component is not updated over the time series, and instead is set equal to its initial value. This makes good intuitive sense, as the level changes quite a bit over the time series, but the slope b of the trend component remains roughly the same. In contrast, the value of gamma (0.96) is high, indicating that the estimate of the seasonal component at the current time point is just based upon very recent observations.
+
+
+```{r}
+TCFutForecasts <- forecast.HoltWinters(TCForecasts, h = 365)
+plot.forecast(TCFutForecasts)
+```
+
+
+
+
+
+
